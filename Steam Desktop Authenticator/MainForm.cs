@@ -17,8 +17,6 @@ namespace Steam_Desktop_Authenticator
         private List<string> updatedSessions = new List<string>();
         private Manifest manifest;
 
-        private bool checkAllAccounts;
-
         private long steamTime = 0;
         private long currentSteamChunk = 0;
         private string passKey = null;
@@ -50,7 +48,7 @@ namespace Steam_Desktop_Authenticator
             if (manifest.Encrypted)
             {
                 passKey = manifest.PromptForPassKey();
-                if(passKey == null)
+                if (passKey == null)
                 {
                     Application.Exit();
                 }
@@ -98,9 +96,14 @@ namespace Steam_Desktop_Authenticator
             this.loadAccountsList();
         }
 
-        private void btnTradeConfirmations_Click(object sender, EventArgs e)
+        private async void btnTradeConfirmations_Click(object sender, EventArgs e)
         {
             if (currentAccount == null) return;
+
+            string oText = btnTradeConfirmations.Text;
+            btnTradeConfirmations.Text = "Loading...";
+            await currentAccount.RefreshSessionAsync();
+            btnTradeConfirmations.Text = oText;
 
             try
             {
@@ -271,7 +274,7 @@ namespace Steam_Desktop_Authenticator
             if (scheme != 0)
             {
                 string confCode = currentAccount.GenerateSteamGuardCode();
-                InputForm confirmationDialog = new InputForm(String.Format("Remvoing Steam Guard from {0}. Enter this confirmation code: {1}", currentAccount.AccountName, confCode));
+                InputForm confirmationDialog = new InputForm(String.Format("Removing Steam Guard from {0}. Enter this confirmation code: {1}", currentAccount.AccountName, confCode));
                 confirmationDialog.ShowDialog();
 
                 if (confirmationDialog.Canceled)
@@ -307,11 +310,11 @@ namespace Steam_Desktop_Authenticator
         private async void menuRefreshSession_Click(object sender, EventArgs e)
         {
             bool status = await currentAccount.RefreshSessionAsync();
-            if(status == true)
+            if (status == true)
             {
                 MessageBox.Show("Your session has been refreshed.", "Session refresh", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 manifest.SaveAccount(currentAccount, manifest.Encrypted, passKey);
-            } 
+            }
             else
             {
                 MessageBox.Show("Failed to refresh your session.\nTry again soon.", "Session refresh", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -358,7 +361,7 @@ namespace Steam_Desktop_Authenticator
 
         // Misc UI handlers
 
-        private async void listAccounts_SelectedValueChanged(object sender, EventArgs e)
+        private void listAccounts_SelectedValueChanged(object sender, EventArgs e)
         {
             for (int i = 0; i < allAccounts.Length; i++)
             {
@@ -368,7 +371,6 @@ namespace Steam_Desktop_Authenticator
                     trayAccountList.Text = account.AccountName;
                     currentAccount = account;
                     loadAccountInfo();
-                    await UpdateCurrentSession();
                     break;
                 }
             }
@@ -411,23 +413,40 @@ namespace Steam_Desktop_Authenticator
 
             List<Confirmation> confs = new List<Confirmation>();
             SteamGuardAccount[] accs =
-                checkAllAccounts ? allAccounts : new SteamGuardAccount[] { currentAccount };
+                manifest.CheckAllAccounts ? allAccounts : new SteamGuardAccount[] { currentAccount };
 
             try
             {
                 lblStatus.Text = "Checking confirmations...";
 
-                foreach (var item in accs)
+                foreach (var acc in accs)
                 {
-                    Confirmation[] tmp = await currentAccount.FetchConfirmationsAsync();
-                    confs.AddRange(tmp);
+                    try
+                    {
+                        Confirmation[] tmp = await currentAccount.FetchConfirmationsAsync();
+                        foreach(var conf in tmp)
+                        {
+                            if (conf.ConfType == Confirmation.ConfirmationType.MarketSellTransaction && manifest.AutoConfirmMarketTransactions)
+                                acc.AcceptConfirmation(conf);
+                            else if (conf.ConfType == Confirmation.ConfirmationType.Trade && manifest.AutoConfirmTrades)
+                                acc.AcceptConfirmation(conf);
+                            else
+                                confs.Add(conf);
+                        }
+                    }
+                    catch (SteamGuardAccount.WGTokenInvalidException)
+                    {
+                        lblStatus.Text = "Refreshing session";
+                        await currentAccount.RefreshSessionAsync(); //Don't save it to the HDD, of course. We'd need their encryption passkey again.
+                        lblStatus.Text = "";
+                    }
                 }
 
                 lblStatus.Text = "";
 
                 if (confs.Count == 0) return;
 
-                popupFrm.Confirmation = confs.ToArray();
+                popupFrm.Confirmations = confs.ToArray();
                 popupFrm.Popup();
             }
             catch (SteamGuardAccount.WGTokenInvalidException)
@@ -490,7 +509,7 @@ namespace Steam_Desktop_Authenticator
         {
             await UpdateSession(currentAccount);
         }
-        
+
         private async Task UpdateSession(SteamGuardAccount account)
         {
             if (account == null) return;
